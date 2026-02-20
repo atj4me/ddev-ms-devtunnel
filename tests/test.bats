@@ -231,4 +231,14 @@ teardown() {
   run ddev devtunnel login
   assert_success
   assert_output --partial "Using device-code login for devtunnel"
+}
+
+@test "devtunnel login --interactive requests interactive mode" {
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev restart -y
+  assert_success
+
+  run ddev devtunnel login --interactive || true
+  assert_output --partial "Run interactive login for devtunnel"
 } 

@@ -38,8 +38,17 @@ except Exception:
         fi
     fi
 
-    [ "${status:-}" = "running" ]
-}
+    # Accept several common positive status values across DDEV versions (case-insensitive).
+    status=$(printf '%s' "${status:-}" | tr '[:upper:]' '[:lower:]')
+    case "$status" in
+        running|ok|up|started)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+} 
 
 # Ensure the DDEV project is running. In interactive shells prompt the user;
 # in non-interactive/test environments auto-start the project.
@@ -122,13 +131,25 @@ devtunnel_login() {
     #  - the web container appears unable to open a browser (headless)
     local out rc
     local prefer_device=false
+    local interactive_forced=false
 
-    if [ -n "${DT_DEVICE_LOGIN:-}" ] || [ -n "${DDEV_NONINTERACTIVE:-}" ] || [ -n "${BATS_TEST_FILENAME:-}" ]; then
-        prefer_device=true
+    # Default to non-interactive device-code login unless `--interactive` is passed.
+    if [ "${1:-}" = "--interactive" ]; then
+        interactive_forced=true
+        prefer_device=false
     else
-        # Best-effort check: see if common "open URL in browser" helpers exist
-        if ! ddev exec -s web bash -c 'command -v xdg-open >/dev/null 2>&1 || command -v gnome-open >/dev/null 2>&1 || command -v kfmclient >/dev/null 2>&1 || command -v wslview >/dev/null 2>&1' >/dev/null 2>&1; then
+        prefer_device=true
+    fi
+
+    # Honor explicit environment/test signals *unless* interactive was forced.
+    if [ "$interactive_forced" != "true" ]; then
+        if [ -n "${DT_DEVICE_LOGIN:-}" ] || [ -n "${DDEV_NONINTERACTIVE:-}" ] || [ -n "${BATS_TEST_FILENAME:-}" ]; then
             prefer_device=true
+        else
+            # Best-effort check: see if common "open URL in browser" helpers exist
+            if ! ddev exec -s web bash -c 'command -v xdg-open >/dev/null 2>&1 || command -v gnome-open >/dev/null 2>&1 || command -v kfmclient >/dev/null 2>&1 || command -v wslview >/dev/null 2>&1' >/dev/null 2>&1; then
+                prefer_device=true
+            fi
         fi
     fi
 
@@ -298,12 +319,12 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ] || [ "$1" = "help" ] || [ $# -eq 0 ]; 
     echo "======================================================================"
     echo ""
     echo "DDEV-Specific Commands:"
-    echo "  login          - Authenticate devtunnel (interactive or device-code with DT_DEVICE_LOGIN=1)"
-    echo "  launch         - Share and launch the site in your browser"
-    echo "  share          - Share the site (runs in background by default)"
-    echo "  stat           - Show devtunnel user/login status"
-    echo "  url            - Show the devtunnel URL for this site (if hosted)"
-    echo "  stop           - Stop devtunnel sharing/host processes"
+    echo "  login [--interactive] - Authenticate devtunnel (defaults to non-interactive device-code; use --interactive to force interactive)"
+    echo "  launch               - Share and launch the site in your browser"
+    echo "  share                - Share the site (runs in background by default)"
+    echo "  stat                 - Show devtunnel user/login status"
+    echo "  url                  - Show the devtunnel URL for this site (if hosted)"
+    echo "  stop                 - Stop devtunnel sharing/host processes" 
     echo ""
     echo "Share options:"
     echo "  --public       - Allow anonymous (public) access"
