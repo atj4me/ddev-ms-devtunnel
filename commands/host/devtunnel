@@ -14,12 +14,27 @@ devtunnel_web() {
 is_site_running() {
     local status
 
+    # Prefer JSON output and use jq where available.
     if ddev describe -j >/dev/null 2>&1; then
         if command -v jq >/dev/null 2>&1; then
             status=$(ddev describe -j 2>/dev/null | jq -r '.raw.services.web.State.Status' 2>/dev/null || true)
         else
-            # Fallback: try to extract status from the plain `ddev describe` output
-            status=$(ddev describe 2>/dev/null | awk '/^web/ { getline; getline; print $2 }' || true)
+            # Try to parse the JSON with Python if jq is not installed (more reliable than
+            # parsing the plain-text `ddev describe` output).
+            if command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; then
+                local py
+                py=$(command -v python3 >/dev/null 2>&1 && echo python3 || echo python)
+                status=$(ddev describe -j 2>/dev/null | $py -c 'import sys,json
+try:
+    obj=json.load(sys.stdin)
+    print(obj.get("raw",{}).get("services",{}).get("web",{}).get("State",{}).get("Status",""))
+except Exception:
+    sys.exit(0)'
+) || true
+            else
+                # Final fallback: try extracting from the plain `ddev describe` output.
+                status=$(ddev describe 2>/dev/null | awk '/^web/ { getline; getline; print $2 }' || true)
+            fi
         fi
     fi
 
@@ -328,6 +343,17 @@ case "$1" in
             exit 1
         fi
         ddev exec -s web devtunnel user show || true
+        ;;
+    "__test_is_site_running")
+        # Internal/testing: emit "running" or "not-running" so tests can assert on
+        # the underlying is_site_running() behavior without sourcing the file.
+        if is_site_running; then
+            echo "running"
+            exit 0
+        else
+            echo "not-running"
+            exit 1
+        fi
         ;;
     "url")
         if url=$(get_devtunnel_url 2>/dev/null); then

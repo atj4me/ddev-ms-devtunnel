@@ -144,6 +144,17 @@ teardown() {
   run timeout 5s ddev devtunnel launch --dry-run 2>/dev/null || true
 }
 
+@test "is_site_running reports running for active project" {
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev restart -y
+  assert_success
+
+  run ddev devtunnel __test_is_site_running
+  assert_success
+  assert_output "running"
+}
+
 @test "no conflicting processes after restart" {
   run ddev add-on get "${DIR}"
   assert_success
