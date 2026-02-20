@@ -220,3 +220,15 @@ teardown() {
   assert_output --partial "Open on host"
   assert_output --partial "Enter code"
 }
+
+@test "devtunnel login auto-uses device-code in noninteractive/headless environments" {
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev restart -y
+  assert_success
+
+  # Tests run with DDEV_NONINTERACTIVE=true in setup(); wrapper should prefer device-code
+  run ddev devtunnel login
+  assert_success
+  assert_output --partial "Using device-code login for devtunnel"
+} 

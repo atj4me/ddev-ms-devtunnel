@@ -48,6 +48,8 @@ DT_DEVICE_LOGIN=1 ddev devtunnel login -d
 
 - If the web container cannot open a browser and `devtunnel` falls back to the device-code flow, the `ddev devtunnel login` wrapper will show host-friendly instructions, attempt to open the device login page on your host, and copy the device code to the clipboard when possible.
 
+- The wrapper will *automatically* select the device-code login when the web container appears headless (cannot open a browser) or when running non-interactively (`DDEV_NONINTERACTIVE=true`). You no longer need to set `DT_DEVICE_LOGIN` in these environments.
+
 - To allow anonymous (public) access, use `--public` / `--allow-anonymous` when running `ddev devtunnel share`.
 
 (See: https://learn.microsoft.com/en-us/azure/developer/dev-tunnels/ for details.)

@@ -115,10 +115,24 @@ devtunnel_login() {
     # Ensure the project is running before attempting `ddev exec`
     ensure_site_running || return 1
 
-    # Run the appropriate login mode and capture output so we can provide
-    # a better host-side UX when the CLI falls back to device-code flow.
+    # Decide whether to run interactive login or prefer the device-code
+    # flow.  Prefer device-code when any of the following is true:
+    #  - DT_DEVICE_LOGIN is explicitly set
+    #  - DDEV_NONINTERACTIVE or test harness is in use
+    #  - the web container appears unable to open a browser (headless)
     local out rc
-    if [ -n "${DT_DEVICE_LOGIN:-}" ]; then
+    local prefer_device=false
+
+    if [ -n "${DT_DEVICE_LOGIN:-}" ] || [ -n "${DDEV_NONINTERACTIVE:-}" ] || [ -n "${BATS_TEST_FILENAME:-}" ]; then
+        prefer_device=true
+    else
+        # Best-effort check: see if common "open URL in browser" helpers exist
+        if ! ddev exec -s web bash -c 'command -v xdg-open >/dev/null 2>&1 || command -v gnome-open >/dev/null 2>&1 || command -v kfmclient >/dev/null 2>&1 || command -v wslview >/dev/null 2>&1' >/dev/null 2>&1; then
+            prefer_device=true
+        fi
+    fi
+
+    if [ "$prefer_device" = true ]; then
         echo "Using device-code login for devtunnel..."
         out=$(ddev exec -s web devtunnel user login -d 2>&1) || rc=$?
     else
