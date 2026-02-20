@@ -32,9 +32,9 @@ post_install_actions:
     #ddev-description:Setup instructions for Microsoft Dev Tunnels
     echo "🚀 ddev-ms-devtunnel installed successfully!"
     echo "Next steps:"
-    echo "1. (Optional) Authenticate the Dev Tunnels CLI inside the web container:"
-    echo "   - Interactive: ddev exec -s web devtunnel user login"
-    echo "   - Device-code (headless/CI): DT_DEVICE_LOGIN=1 ddev exec -s web devtunnel user login -d"
+    echo "1. (Optional) Authenticate the Dev Tunnels CLI:"
+    echo "   - Interactive: ddev devtunnel login"
+    echo "   - Device-code (headless/CI): DT_DEVICE_LOGIN=1 ddev devtunnel login -d"
     echo "2. Run: 'ddev restart'"
     echo "3. Host your site with Dev Tunnels: 'ddev devtunnel share' (add --public to allow anonymous access)"
     echo " "    echo "Note: this add-on installs the Dev Tunnels CLI into the web container and exposes it via 'ddev devtunnel'."

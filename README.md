@@ -40,10 +40,10 @@ This add-on is particularly useful for:
 
 ```bash
 # interactive
-ddev exec -s web devtunnel user login
+ddev devtunnel login
 
 # or device-code (useful for headless/CI)
-DT_DEVICE_LOGIN=1 ddev exec -s web devtunnel user login -d
+DT_DEVICE_LOGIN=1 ddev devtunnel login -d
 ```
 
 - To allow anonymous (public) access, use `--public` / `--allow-anonymous` when running `ddev devtunnel share`.
