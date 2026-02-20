@@ -14,20 +14,34 @@ devtunnel_web() {
 is_site_running() {
     local status
 
-    # Prefer JSON output and use jq where available.
+    # Prefer JSON output and use jq where available. Accept multiple JSON shapes
+    # because different DDEV versions expose slightly different keys.
     if ddev describe -j >/dev/null 2>&1; then
         if command -v jq >/dev/null 2>&1; then
-            status=$(ddev describe -j 2>/dev/null | jq -r '.raw.services.web.State.Status' 2>/dev/null || true)
+            status=$(ddev describe -j 2>/dev/null | jq -r '
+                .raw.services.web.State.Status
+                // .raw.services.web.status
+                // .services.web.State.Status
+                // .services.web.status
+                // .status
+                // empty' 2>/dev/null || true)
         else
-            # Try to parse the JSON with Python if jq is not installed (more reliable than
-            # parsing the plain-text `ddev describe` output).
+            # Try to parse the JSON with Python if jq is not installed.
             if command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; then
                 local py
                 py=$(command -v python3 >/dev/null 2>&1 && echo python3 || echo python)
                 status=$(ddev describe -j 2>/dev/null | $py -c 'import sys,json
 try:
     obj=json.load(sys.stdin)
-    print(obj.get("raw",{}).get("services",{}).get("web",{}).get("State",{}).get("Status",""))
+    s = (
+        obj.get("raw",{}).get("services",{}).get("web",{}).get("State",{}).get("Status")
+        or obj.get("raw",{}).get("services",{}).get("web",{}).get("status")
+        or obj.get("services",{}).get("web",{}).get("State",{}).get("Status")
+        or obj.get("services",{}).get("web",{}).get("status")
+        or obj.get("status")
+    )
+    if s:
+        print(s)
 except Exception:
     sys.exit(0)'
 ) || true
@@ -86,10 +100,40 @@ get_devtunnel_url() {
     local logpath="/var/log/devtunnel_${port}.log"
     if ddev exec -s web bash -c "[ -f '${logpath}' ]" >/dev/null 2>&1; then
         local url
-        url=$(ddev exec -s web bash -c "grep -m1 'Hosting port' ${logpath} 2>/dev/null | sed -E 's/.*(https?:\\/\\/[^ ]+).*/\\1/' || true" 2>/dev/null)
+        # Prefer any https/http URL emitted in the log (handles lines like "Connect via browser:")
+        url=$(ddev exec -s web bash -c "grep -m1 -oE 'https?://[^[:space:]]+' ${logpath} 2>/dev/null || true" 2>/dev/null)
         if [ -n "$url" ]; then
             echo "$url"
             return 0
+        fi
+    fi
+
+    # Next fallback: query the devtunnel CLI for any active tunnels (JSON output)
+    # This covers foreground hosts (which print to stdout) and other cases where no log exists.
+    if ddev exec -s web devtunnel list -j >/dev/null 2>&1; then
+        local tunnelId uri
+        tunnelId=$(ddev exec -s web devtunnel list -j 2>/dev/null | (command -v python3 >/dev/null 2>&1 && python3 -c 'import sys,json
+try:
+    obj=json.load(sys.stdin)
+    tunnels=obj.get("tunnels",[])
+    print(tunnels[0].get("tunnelId","") if tunnels else "")
+except Exception:
+    sys.exit(0)') || true)
+        if [ -n "$tunnelId" ]; then
+            uri=$(ddev exec -s web devtunnel show "$tunnelId" -j 2>/dev/null | (command -v python3 >/dev/null 2>&1 && python3 -c "import sys,json
+try:
+    obj=json.load(sys.stdin)
+    ports=obj.get('tunnel',{}).get('ports',[])
+    for p in ports:
+        if p.get('portNumber') == ${port}:
+            print(p.get('portUri',''))
+            break
+except Exception:
+    sys.exit(0)") || true)
+            if [ -n "$uri" ]; then
+                echo "$uri"
+                return 0
+            fi
         fi
     fi
 
@@ -155,10 +199,19 @@ devtunnel_login() {
 
     if [ "$prefer_device" = true ]; then
         echo "Using device-code login for devtunnel..."
-        out=$(ddev exec -s web devtunnel user login -d 2>&1) || rc=$?
+        tmpfile=$(mktemp /tmp/devtunnel-login.XXXXXX)
+        # Stream CLI output live to the terminal while saving it so we can parse it later.
+        ddev exec -s web devtunnel user login -d 2>&1 | tee "$tmpfile"
+        rc=${PIPESTATUS[0]:-0}
+        out=$(cat "$tmpfile" 2>/dev/null || true)
+        rm -f "$tmpfile" 2>/dev/null || true
     else
         echo "Run interactive login for devtunnel in the web container..."
-        out=$(ddev exec -s web devtunnel user login 2>&1) || rc=$?
+        tmpfile=$(mktemp /tmp/devtunnel-login.XXXXXX)
+        ddev exec -s web devtunnel user login 2>&1 | tee "$tmpfile"
+        rc=${PIPESTATUS[0]:-0}
+        out=$(cat "$tmpfile" 2>/dev/null || true)
+        rm -f "$tmpfile" 2>/dev/null || true
     fi
 
     # Always show the original CLI output for transparency
@@ -166,9 +219,13 @@ devtunnel_login() {
 ' "$out"
 
     # If the CLI fell back to device-code flow, extract the device URL/code
-    if echo "$out" | grep -qE "devicelogin|device code"; then
+    if echo "$out" | grep -qiE 'devicelogin|/device|device[[:space:]-]?code'; then
         local url code
-        url=$(printf '%s' "$out" | grep -oE 'https?://[^[:space:]]*devicelogin[^[:space:]]*' | head -n1 || true)
+        # Prefer device-specific URLs, fall back to the first URL found
+        url=$(printf '%s' "$out" | grep -oE 'https?://[^[:space:]]*(devicelogin|/device|login.microsoft.com/device)[^[:space:]]*' | head -n1 || true)
+        if [ -z "$url" ]; then
+            url=$(printf '%s' "$out" | grep -oE 'https?://[^[:space:]]+' | head -n1 || true)
+        fi
         # Try several patterns to find the code (best-effort)
         code=$(printf '%s' "$out" | grep -oE '[A-Z0-9-]{6,}' | head -n1 || true)
 
@@ -280,10 +337,19 @@ run_devtunnel_share() {
         start_devtunnel_host_bg "$port" "$allow_anon_flag" >/dev/null 2>&1 || true
         sleep 1
 
-        # Try to print the URL from the log
-        if url=$(get_devtunnel_url 2>/dev/null); then
-            echo "Hosting at: ${url}"
-        else
+        # Try to print the URL from the log — retry (longer) because the host may take several seconds to establish
+        local attempts=30   # ~15s total
+        local delay=0.5
+        local url=""
+        for i in $(seq 1 $attempts); do
+            url=$(get_devtunnel_url 2>/dev/null) || url=""
+            if [ -n "$url" ]; then
+                echo "Hosting at: ${url}"
+                break
+            fi
+            sleep $delay
+        done
+        if [ -z "$url" ]; then
             echo "Started devtunnel host (background). Run 'ddev devtunnel url' to retrieve the public URL once available."
         fi
         return 0
@@ -395,7 +461,7 @@ case "$1" in
             echo "$url"
         else
             echo "Error: Could not retrieve devtunnel URL. Is 'ddev devtunnel share' running?"
-            return 1
+            exit 1
         fi
         ;;
     *)
