@@ -1,0 +1,4 @@
+#ddev-generated
+RUN curl -sL https://aka.ms/DevTunnelCliInstall | bash
+
+ARG username

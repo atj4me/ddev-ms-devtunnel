@@ -1,0 +1,44 @@
+name: ms-devtunnel
+
+project_files:
+  - config.ms-devtunnel.yaml
+  - commands/host/devtunnel
+  - web-build/Dockerfile.ms-devtunnel
+  - docker-compose.ms-devtunnel.yaml
+
+ddev_version_constraint: '>= v1.24.3'
+
+pre_install_actions:
+  - |
+    #ddev-nodisplay
+    #ddev-description:Removing old files
+    has_old_files=false
+    for file in "${DDEV_APPROOT}/.ddev/ms-devtunnel/config/tailscale-private.json" "${DDEV_APPROOT}/.ddev/ms-devtunnel/config/tailscale-public.json" "${DDEV_APPROOT}/.ddev/.env.ms-devtunnel" ; do
+      if [ ! -f "${file}" ]; then
+        continue
+      fi
+      if grep -q '#ddev-generated' "${file}"; then
+        rm -f "${file}"
+      else
+        echo "${file} needs to be removed but has been modified by the user. Please check it and remove it"
+        has_old_files=true
+      fi
+    done
+    if [ "${has_old_files}" = true ]; then
+      exit 2
+    fi
+
+post_install_actions:
+  - |
+    #ddev-description:Setup instructions for Microsoft Dev Tunnels
+    echo "🚀 ddev-ms-devtunnel installed successfully!"
+    echo "Next steps:"
+    echo "1. (Optional) Authenticate the Dev Tunnels CLI inside the web container:"
+    echo "   - Interactive: ddev exec -s web devtunnel user login"
+    echo "   - Device-code (headless/CI): DT_DEVICE_LOGIN=1 ddev exec -s web devtunnel user login -d"
+    echo "2. Run: 'ddev restart'"
+    echo "3. Host your site with Dev Tunnels: 'ddev devtunnel share' (add --public to allow anonymous access)"
+    echo " "    echo "Note: this add-on installs the Dev Tunnels CLI into the web container and exposes it via 'ddev devtunnel'."
+    echo "It does NOT create a host-level 'ddev share' provider by default — see README for an optional share-provider shim."
+    echo " "    echo "For more helpful commands, run 'ddev devtunnel --help'"
+    echo "For more info: https://learn.microsoft.com/en-us/azure/developer/dev-tunnels/"

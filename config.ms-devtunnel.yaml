@@ -1,0 +1,7 @@
+#ddev-generated
+# Dev Tunnels (Microsoft) configuration notes.
+# The Dev Tunnels CLI (`devtunnel`) is installed in the web container by the web-build Dockerfile.
+# No always-on background daemon is required; run `ddev devtunnel share` to host a tunnel on demand.
+hooks:
+  pre-stop:
+    - exec: devtunnel user logout || true

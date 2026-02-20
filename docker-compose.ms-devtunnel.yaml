@@ -1,0 +1,4 @@
+#ddev-generated
+services:
+  web: {}
+# No extra volumes or Tailscale environment required for Dev Tunnels

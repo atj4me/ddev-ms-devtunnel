@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+
+## #ddev-generated: If you want to edit and own this file, remove this line.
+## Description: Microsoft Dev Tunnels (devtunnel) command with launch/share functionality
+## Usage: devtunnel [login|launch|share|stat|url|stop|args...]
+## Example: "ddev devtunnel launch" or "ddev devtunnel share"
+
+# Helper to run devtunnel in the web container
+devtunnel_web() {
+    ddev exec -s web devtunnel "$@"
+}
+
+get_devtunnel_url() {
+    local port
+    port=${DDEV_ROUTER_HTTP_PORT:-80}
+
+    # Try to extract the hosted URL from the devtunnel log file created when sharing in background
+    local logpath="/var/log/devtunnel_${port}.log"
+    if ddev exec -s web bash -c "[ -f '${logpath}' ]" >/dev/null 2>&1; then
+        local url
+        url=$(ddev exec -s web bash -c "grep -m1 'Hosting port' ${logpath} 2>/dev/null | sed -E 's/.*(https?:\\/\\/[^ ]+).*/\\1/' || true" 2>/dev/null)
+        if [ -n "$url" ]; then
+            echo "$url"
+            return 0
+        fi
+    fi
+
+    # Fallback: if a devtunnel host process is running, attempt to inspect its stdout via ps (best-effort)
+    local pid
+    pid=$(ddev exec -s web bash -c "pgrep -f 'devtunnel host' || true" 2>/dev/null | tr -d '\r' | head -n1)
+    if [ -n "$pid" ]; then
+        # Try to find recent log lines from that pid in /proc (best-effort, may fail inside containers)
+        local fallback
+        fallback=$(ddev exec -s web bash -c "ps -o args= -p ${pid} 2>/dev/null || true" 2>/dev/null)
+        if [[ "$fallback" == *"devtunnel host"* ]]; then
+            # We can't reliably get the URL here; return success but no URL
+            return 1
+        fi
+    fi
+
+    return 1
+}
+
+check_devtunnel_installed() {
+    if ! ddev exec -s web which devtunnel >/dev/null 2>&1; then
+        echo "Error: 'devtunnel' CLI not installed in web container. Ensure the add-on's web-build Dockerfile was applied."
+        return 1
+    fi
+    return 0
+}
+
+devtunnel_login() {
+    # Use device code login if DT_DEVICE_LOGIN is set (helpful for headless/CI)
+    if [ -n "${DT_DEVICE_LOGIN:-}" ]; then
+        echo "Using device-code login for devtunnel..."
+        ddev exec -s web devtunnel user login -d || return $?
+    else
+        echo "Run interactive login for devtunnel in the web container..."
+        ddev exec -s web devtunnel user login || return $?
+    fi
+    echo "Successfully logged in (devtunnel)"
+    return 0
+}
+
+check_devtunnel_auth() {
+    # Check if devtunnel CLI exists
+    if ! check_devtunnel_installed; then
+        return 1
+    fi
+
+    # Check login status
+    if ddev exec -s web devtunnel user show >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # Not logged in
+    echo "devtunnel not logged in. Run 'ddev devtunnel login' to authenticate (or set DT_DEVICE_LOGIN=1 for device code login)."
+    return 1
+}
+
+start_devtunnel_host_bg() {
+    local port="$1"
+    local allow_anon_flag="$2"
+    local logpath="/var/log/devtunnel_${port}.log"
+
+    # Start the host in background inside the web container and capture PID
+    ddev exec -s web bash -c "nohup devtunnel host -p ${port} ${allow_anon_flag} >/var/log/devtunnel_${port}.log 2>&1 & echo \$!" 2>/dev/null
+}
+
+run_devtunnel_share() {
+    local port="${DDEV_ROUTER_HTTP_PORT:-80}"
+    local is_public=false
+    local bg_mode=true
+    local allow_anon_flag=""
+
+    for arg in "$@"; do
+        case $arg in
+            --public)
+                is_public=true
+                allow_anon_flag="--allow-anonymous"
+                ;;
+            --port=*)
+                port="${arg#--port=}"
+                ;;
+            --fg|--foreground)
+                bg_mode=false
+                ;;
+            --bg)
+                bg_mode=true
+                ;;
+        esac
+    done
+
+    if ! check_devtunnel_installed; then
+        return 1
+    fi
+
+    if [ "$is_public" = false ]; then
+        # Private tunnels require login
+        if ! check_devtunnel_auth; then
+            echo "Error: Authentication required for private dev tunnel hosting"
+            return 1
+        fi
+    fi
+
+    echo "Starting devtunnel host on port ${port} ${is_public:+(public)}..."
+
+    if [ "$bg_mode" = true ]; then
+        start_devtunnel_host_bg "$port" "$allow_anon_flag" >/dev/null 2>&1 || true
+        sleep 1
+
+        # Try to print the URL from the log
+        if url=$(get_devtunnel_url 2>/dev/null); then
+            echo "Hosting at: ${url}"
+        else
+            echo "Started devtunnel host (background). Run 'ddev devtunnel url' to retrieve the public URL once available."
+        fi
+        return 0
+    else
+        # Foreground (user will Ctrl-C to stop)
+        ddev exec -s web devtunnel host -p "${port}" ${allow_anon_flag}
+        return $?
+    fi
+}
+
+stop_devtunnel_share() {
+    # Kill any running 'devtunnel host' processes in the web container
+    echo "Stopping devtunnel host(s)..."
+    ddev exec -s web bash -c "pgrep -f 'devtunnel host' 2>/dev/null || true" 2>/dev/null | tr -d '\r' | while read -r pid; do
+        if [ -n "$pid" ]; then
+            ddev exec -s web bash -c "kill ${pid} >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
+        fi
+    done
+    # Remove log files (best-effort)
+    ddev exec -s web bash -c "rm -f /var/log/devtunnel_*.log 2>/dev/null || true" >/dev/null 2>&1 || true
+    echo "devtunnel sharing stopped"
+}
+
+# Help output
+if [ "$1" = "--help" ] || [ "$1" = "-h" ] || [ "$1" = "help" ] || [ $# -eq 0 ]; then
+    echo "DDEV Microsoft Dev Tunnels Add-on - Secure project sharing via devtunnel"
+    echo "======================================================================"
+    echo ""
+    echo "DDEV-Specific Commands:"
+    echo "  login          - Authenticate devtunnel (interactive or device-code with DT_DEVICE_LOGIN=1)"
+    echo "  launch         - Share and launch the site in your browser"
+    echo "  share          - Share the site (runs in background by default)"
+    echo "  stat           - Show devtunnel user/login status"
+    echo "  url            - Show the devtunnel URL for this site (if hosted)"
+    echo "  stop           - Stop devtunnel sharing/host processes"
+    echo ""
+    echo "Share options:"
+    echo "  --public       - Allow anonymous (public) access"
+    echo "  --port=<port>  - Specify a different local port to share (default: ${DDEV_ROUTER_HTTP_PORT:-80})"
+    echo "  --fg / --bg    - Run host in foreground or background (default: background)"
+    echo ""
+    echo "DDEV Examples:"
+    echo "  ddev devtunnel share               # Host privately (requires devtunnel login)"
+    echo "  ddev devtunnel share --public      # Host publicly (no login required)"
+    echo "  ddev devtunnel launch              # Host and open URL in browser"
+    echo "  ddev devtunnel login               # Authenticate with devtunnel"
+    echo "  ddev devtunnel stop                # Stop sharing"
+    echo ""
+    echo "Native devtunnel CLI:"
+    if ddev exec -s web which devtunnel >/dev/null 2>&1; then
+        ddev exec -s web devtunnel --help 2>/dev/null || echo "devtunnel help not available"
+    else
+        echo "devtunnel not installed in web container"
+    fi
+    exit 0
+fi
+
+case "$1" in
+    "login")
+        devtunnel_login
+        ;;
+    "launch")
+        # Start sharing (background) then attempt to open URL
+        if run_devtunnel_share "${@:2}"; then
+            sleep 1
+            if url=$(get_devtunnel_url 2>/dev/null); then
+                echo "Launching: $url"
+                if [ -n "${BATS_TEST_FILENAME:-}" ]; then
+                    echo "Test mode: would launch $url"
+                else
+                    ddev launch "$url"
+                fi
+            else
+                echo "Warning: Could not retrieve devtunnel URL automatically. Use 'ddev devtunnel url' once the host is started."
+            fi
+        fi
+        ;;
+    "share")
+        run_devtunnel_share "${@:2}"
+        ;;
+    "stop")
+        stop_devtunnel_share
+        ;;
+    "stat")
+        if ! check_devtunnel_installed; then
+            exit 1
+        fi
+        ddev exec -s web devtunnel user show || true
+        ;;
+    "url")
+        if url=$(get_devtunnel_url 2>/dev/null); then
+            echo "$url"
+        else
+            echo "Error: Could not retrieve devtunnel URL. Is 'ddev devtunnel share' running?"
+            return 1
+        fi
+        ;;
+    *)
+        # Forward all other commands directly to devtunnel CLI inside web container
+        if ! check_devtunnel_installed; then
+            exit 1
+        fi
+        ddev exec -s web devtunnel "$@"
+        ;;
+esac
