@@ -1,4 +1,15 @@
 #ddev-generated
-RUN curl -sL https://aka.ms/DevTunnelCliInstall | bash
+# Install Microsoft Dev Tunnel CLI directly (skip the install script's apt step which can fail
+# when unrelated repos in the base image have expired GPG keys)
+RUN set -eux \
+  && ARCH="$(uname -m)" \
+  && case "${ARCH}" in \
+       x86_64|amd64) URL="https://tunnelsassetsprod.blob.core.windows.net/cli/linux-x64-devtunnel" ;; \
+       aarch64|arm64) URL="https://tunnelsassetsprod.blob.core.windows.net/cli/linux-arm64-devtunnel" ;; \
+       *) echo "unsupported ARCH ${ARCH}"; exit 1 ;; \
+     esac \
+  && curl -fsSL -o /usr/local/bin/devtunnel "$URL" \
+  && chmod +x /usr/local/bin/devtunnel \
+  && /usr/local/bin/devtunnel --version || true
 
 ARG username
