@@ -174,3 +174,38 @@ teardown() {
   assert_file_exist .ddev/web-build/Dockerfile.ms-devtunnel
   assert_file_exist .ddev/docker-compose.ms-devtunnel.yaml
 }
+
+@test "devtunnel login starts project when stopped (noninteractive)" {
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev restart -y
+  assert_success
+
+  run ddev stop
+  assert_success
+
+  # Confirm web is not running
+  run bash -c "ddev describe -j | jq -r '.raw.services.web.State.Status' || true"
+  [[ "$output" != "running" ]]
+
+  # Invoke login (DDEV_NONINTERACTIVE=true in tests -> should auto-start)
+  run ddev devtunnel login || true
+
+  # Now web should be running again
+  run bash -c "ddev describe -j | jq -r '.raw.services.web.State.Status'"
+  assert_output "running"
+}
+
+@test "devtunnel login (device-code) shows host-friendly instructions" {
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev restart -y
+  assert_success
+
+  # Force device-code login and ensure wrapper prints host-friendly guidance
+  run DT_DEVICE_LOGIN=1 ddev devtunnel login
+  assert_success
+  assert_output --partial "device-code login"
+  assert_output --partial "Open on host"
+  assert_output --partial "Enter code"
+}

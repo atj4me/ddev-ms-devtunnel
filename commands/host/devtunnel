@@ -10,6 +10,50 @@ devtunnel_web() {
     ddev exec -s web devtunnel "$@"
 }
 
+# Return true if the DDEV project's web service is running
+is_site_running() {
+    local status
+
+    if ddev describe -j >/dev/null 2>&1; then
+        if command -v jq >/dev/null 2>&1; then
+            status=$(ddev describe -j 2>/dev/null | jq -r '.raw.services.web.State.Status' 2>/dev/null || true)
+        else
+            # Fallback: try to extract status from the plain `ddev describe` output
+            status=$(ddev describe 2>/dev/null | awk '/^web/ { getline; getline; print $2 }' || true)
+        fi
+    fi
+
+    [ "${status:-}" = "running" ]
+}
+
+# Ensure the DDEV project is running. In interactive shells prompt the user;
+# in non-interactive/test environments auto-start the project.
+ensure_site_running() {
+    if is_site_running; then
+        return 0
+    fi
+
+    # Auto-start in non-interactive / CI / tests
+    if [ -n "${DDEV_NONINTERACTIVE:-}" ] || [ -n "${BATS_TEST_FILENAME:-}" ]; then
+        echo "Project not running — starting ddev (non-interactive)..."
+        ddev start -y || return $?
+        return 0
+    fi
+
+    # Interactive prompt
+    read -r -p "Project is not running — start now? [Y/n] " ans || return 1
+    case "$ans" in
+        ""|[Yy]*)
+            ddev start -y || return $?
+            return 0
+            ;;
+        *)
+            echo "Aborted: project must be running to use devtunnel commands."
+            return 1
+            ;;
+    esac
+}
+
 get_devtunnel_url() {
     local port
     port=${DDEV_ROUTER_HTTP_PORT:-80}
@@ -42,22 +86,79 @@ get_devtunnel_url() {
 }
 
 check_devtunnel_installed() {
+    # Ensure the site is running so `ddev exec` succeeds (will prompt or auto-start).
+    ensure_site_running || return 1
+
     if ! ddev exec -s web which devtunnel >/dev/null 2>&1; then
         echo "Error: 'devtunnel' CLI not installed in web container. Ensure the add-on's web-build Dockerfile was applied."
         return 1
     fi
     return 0
-}
+} 
 
 devtunnel_login() {
-    # Use device code login if DT_DEVICE_LOGIN is set (helpful for headless/CI)
+    # Ensure the project is running before attempting `ddev exec`
+    ensure_site_running || return 1
+
+    # Run the appropriate login mode and capture output so we can provide
+    # a better host-side UX when the CLI falls back to device-code flow.
+    local out rc
     if [ -n "${DT_DEVICE_LOGIN:-}" ]; then
         echo "Using device-code login for devtunnel..."
-        ddev exec -s web devtunnel user login -d || return $?
+        out=$(ddev exec -s web devtunnel user login -d 2>&1) || rc=$?
     else
         echo "Run interactive login for devtunnel in the web container..."
-        ddev exec -s web devtunnel user login || return $?
+        out=$(ddev exec -s web devtunnel user login 2>&1) || rc=$?
     fi
+
+    # Always show the original CLI output for transparency
+    printf '%s
+' "$out"
+
+    # If the CLI fell back to device-code flow, extract the device URL/code
+    if echo "$out" | grep -qE "devicelogin|device code"; then
+        local url code
+        url=$(printf '%s' "$out" | grep -oE 'https?://[^[:space:]]*devicelogin[^[:space:]]*' | head -n1 || true)
+        # Try several patterns to find the code (best-effort)
+        code=$(printf '%s' "$out" | grep -oE '[A-Z0-9-]{6,}' | head -n1 || true)
+
+        echo
+        echo "💡 devtunnel: device-code login detected — host-friendly instructions follow."
+        if [ -n "$url" ]; then
+            echo "Open on host: $url"
+        else
+            echo "Open on host: https://microsoft.com/devicelogin"
+        fi
+        if [ -n "$code" ]; then
+            echo "Enter code: $code"
+
+            # Try to copy the code to the host clipboard (best-effort)
+            if command -v wl-copy >/dev/null 2>&1; then
+                printf '%s' "$code" | wl-copy >/dev/null 2>&1 || true
+                echo "(Code copied to clipboard via wl-copy)"
+            elif command -v xclip >/dev/null 2>&1; then
+                printf '%s' "$code" | xclip -selection clipboard >/dev/null 2>&1 || true
+                echo "(Code copied to clipboard via xclip)"
+            elif command -v pbcopy >/dev/null 2>&1; then
+                printf '%s' "$code" | pbcopy >/dev/null 2>&1 || true
+                echo "(Code copied to clipboard via pbcopy)"
+            fi
+        fi
+
+        # If interactive on the host, attempt to open the device login URL there
+        if [ -z "${DDEV_NONINTERACTIVE:-}" ] && command -v ddev >/dev/null 2>&1; then
+            if [ -n "$url" ]; then
+                echo "Opening device login page on the host browser..."
+                ddev launch "$url" >/dev/null 2>&1 || true
+            fi
+        fi
+    fi
+
+    # Preserve the original exit behavior
+    if [ -n "${rc:-}" ]; then
+        return $rc
+    fi
+
     echo "Successfully logged in (devtunnel)"
     return 0
 }
@@ -144,6 +245,12 @@ run_devtunnel_share() {
 }
 
 stop_devtunnel_share() {
+    # If the project isn't running, nothing to do
+    if ! is_site_running; then
+        echo "No running project found; nothing to stop."
+        return 0
+    fi
+
     # Kill any running 'devtunnel host' processes in the web container
     echo "Stopping devtunnel host(s)..."
     ddev exec -s web bash -c "pgrep -f 'devtunnel host' 2>/dev/null || true" 2>/dev/null | tr -d '\r' | while read -r pid; do
